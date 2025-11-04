@@ -73,70 +73,115 @@ export default function Home() {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
+        // Try to parse complete JSON objects from buffer
+        while (buffer.length > 0) {
+          // Skip whitespace
+          buffer = buffer.trimStart();
+          if (buffer.length === 0) break;
 
-          try {
-            const message: StreamMessage = JSON.parse(line);
+          // Try to find a complete JSON object
+          let braceCount = 0;
+          let inString = false;
+          let escaped = false;
+          let jsonEnd = -1;
 
-            switch (message.type) {
-              case 'status':
-                setStatusMessage(message.message);
-                break;
+          for (let i = 0; i < buffer.length; i++) {
+            const char = buffer[i];
 
-              case 'blueprint':
-                setBlueprint(message.blueprint);
-                setState('blueprint_ready');
-                toast.success('Blueprint created!');
-                break;
-
-              case 'file':
-                setFiles((prev) => {
-                  const existing = prev.find((f) => f.path === message.file.path);
-                  if (existing) {
-                    return prev.map((f) =>
-                      f.path === message.file.path ? message.file : f
-                    );
-                  }
-                  return [...prev, message.file];
-                });
-                setState('files_streaming');
-                if (!selectedFile) {
-                  setSelectedFile(message.file.path);
-                }
-                break;
-
-              case 'file_update':
-                setFiles((prev) =>
-                  prev.map((f) =>
-                    f.path === message.file.path
-                      ? { ...f, contents: message.file.contents || f.contents }
-                      : f
-                  )
-                );
-                break;
-
-              case 'complete':
-                setState('complete');
-                setStatusMessage('');
-                toast.success(
-                  `Generation complete! ${message.metrics?.files || 0} files created.`
-                );
-                break;
-
-              case 'error':
-                toast.error(message.message);
-                if (message.details) {
-                  console.error('Generation error:', message.details);
-                }
-                setState('idle');
-                break;
+            if (escaped) {
+              escaped = false;
+              continue;
             }
-          } catch (e) {
-            console.error('Failed to parse message:', line, e);
+
+            if (char === '\\') {
+              escaped = true;
+              continue;
+            }
+
+            if (char === '"') {
+              inString = !inString;
+              continue;
+            }
+
+            if (!inString) {
+              if (char === '{') braceCount++;
+              if (char === '}') braceCount--;
+
+              if (braceCount === 0 && i > 0) {
+                jsonEnd = i + 1;
+                break;
+              }
+            }
+          }
+
+          // If we found a complete JSON object, parse it
+          if (jsonEnd > 0) {
+            const jsonStr = buffer.substring(0, jsonEnd);
+            buffer = buffer.substring(jsonEnd);
+
+            try {
+              const message: StreamMessage = JSON.parse(jsonStr);
+
+              switch (message.type) {
+                case 'status':
+                  setStatusMessage(message.message);
+                  break;
+
+                case 'blueprint':
+                  setBlueprint(message.blueprint);
+                  setState('blueprint_ready');
+                  toast.success('Blueprint created!');
+                  break;
+
+                case 'file':
+                  setFiles((prev) => {
+                    const existing = prev.find((f) => f.path === message.file.path);
+                    if (existing) {
+                      return prev.map((f) =>
+                        f.path === message.file.path ? message.file : f
+                      );
+                    }
+                    return [...prev, message.file];
+                  });
+                  setState('files_streaming');
+                  if (!selectedFile) {
+                    setSelectedFile(message.file.path);
+                  }
+                  break;
+
+                case 'file_update':
+                  setFiles((prev) =>
+                    prev.map((f) =>
+                      f.path === message.file.path
+                        ? { ...f, contents: message.file.contents || f.contents }
+                        : f
+                    )
+                  );
+                  break;
+
+                case 'complete':
+                  setState('complete');
+                  setStatusMessage('');
+                  toast.success(
+                    `Generation complete! ${message.metrics?.files || 0} files created.`
+                  );
+                  break;
+
+                case 'error':
+                  toast.error(message.message);
+                  if (message.details) {
+                    console.error('Generation error:', message.details);
+                  }
+                  setState('idle');
+                  break;
+              }
+            } catch (e) {
+              console.error('Failed to parse JSON object:', jsonStr.substring(0, 100), e);
+            }
+          } else {
+            // Incomplete JSON object, wait for more data
+            break;
           }
         }
       }
