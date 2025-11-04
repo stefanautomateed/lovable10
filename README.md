@@ -15,7 +15,7 @@ An AI-powered application builder that generates complete, working web applicati
 ## 🏗️ Architecture
 
 - **Frontend**: Next.js 15 (App Router), React 19, TypeScript, TailwindCSS
-- **AI**: OpenAI API (GPT-4o-mini or GPT-5-nano)
+- **AI**: OpenAI API (GPT-4o-mini - fast & cheap at $0.15/1M tokens)
 - **Code Editor**: Monaco Editor
 - **Live Preview**: Sandpack (CodeSandbox)
 - **Validation**: Zod schemas
@@ -174,10 +174,17 @@ The app can run on any platform supporting Next.js:
 
 Edit `.env.local`:
 ```bash
-OPENAI_MODEL=gpt-4o
-# or
-OPENAI_MODEL=gpt-5-nano
+# Default (recommended - fast and cheap)
+OPENAI_MODEL=gpt-4o-mini
+
+# More capable but 10x more expensive
+# OPENAI_MODEL=gpt-4o
+
+# Older model
+# OPENAI_MODEL=gpt-3.5-turbo
 ```
+
+**Note:** GPT-5 is not yet available. The default `gpt-4o-mini` is already extremely cheap at $0.15/1M input tokens.
 
 ### Modify System Prompt
 
@@ -189,19 +196,39 @@ Edit `tailwind.config.ts` to change colors, fonts, and animations.
 
 ## 🐛 Troubleshooting
 
+### "Unexpected token" JSON parsing errors
+If you see errors like "Unexpected token 'o', json..." in the browser console:
+
+1. **Check Vercel deployed the latest code:**
+   - Go to Vercel Dashboard → Deployments
+   - Ensure the latest commit is deployed
+   - Look for commit message with "streaming parser fix"
+
+2. **Force redeploy on Vercel:**
+   - Go to Vercel Dashboard → Deployments
+   - Click "..." on latest deployment → "Redeploy"
+   - Or push a new commit to trigger deployment
+
+3. **Clear browser cache:**
+   - Hard refresh: Ctrl+Shift+R (Windows/Linux) or Cmd+Shift+R (Mac)
+   - Or open in incognito/private window
+
 ### "OpenAI API key not configured"
 - Check that `.env.local` exists and contains `OPENAI_API_KEY`
+- On Vercel: Add the key in Project Settings → Environment Variables
 - Restart the dev server after adding environment variables
 
-### Files not appearing in preview
-- Ensure the AI generated all required files (index.html, index.js, App.js)
-- Check browser console for errors
-- Try regenerating with a simpler prompt
+### Files not appearing in preview (0 files created)
+- Fallback system should always create at least 4 default files
+- Check browser console for API errors
+- Verify OpenAI API key has credits and is valid
+- Try with a simpler prompt like "Create a counter app"
 
 ### Preview not loading
-- Check that Sandpack dependencies are installed
-- Clear browser cache
-- Verify files have valid syntax
+- Check that Sandpack dependencies are installed: `npm install`
+- Clear browser cache and reload
+- Verify files have valid syntax (no incomplete JSON)
+- Check browser console for specific Sandpack errors
 
 ## 🤝 Contributing
 

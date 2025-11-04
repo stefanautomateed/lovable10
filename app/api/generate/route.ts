@@ -3,6 +3,9 @@ import { StreamMessageSchema } from '@/lib/schemas';
 
 export const runtime = 'edge';
 
+// Version: 1.0.3 - Streaming parser fix deployed
+const VERSION = '1.0.3';
+
 // Helper to extract JSON from text that might contain markdown or other formatting
 function extractJSON(text: string): any {
   // Remove markdown code blocks
