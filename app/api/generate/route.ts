@@ -1,60 +1,19 @@
-import { streamOpenAI, streamToString } from '@/lib/openai';
+import { streamOpenAI, streamToString, OpenAIMessage } from '@/lib/openai';
 import { StreamMessageSchema } from '@/lib/schemas';
 
 export const runtime = 'edge';
 
-const SYSTEM_PROMPT = `You are an expert web developer who creates complete, working React applications.
-
-When given a user's request, you must respond in TWO PHASES:
-
-PHASE 1 - BLUEPRINT:
-Output a single JSON object with type "blueprint" containing:
-{
-  "type": "blueprint",
-  "blueprint": {
-    "title": "App Name",
-    "description": "Brief description",
-    "pages": ["Home", "About"],
-    "components": ["Button", "Card"],
-    "routes": ["/", "/about"],
-    "tech": {"framework": "react", "ui": "css"},
-    "notes": "Implementation notes"
-  }
+// Helper to call OpenAI and get full response
+async function callOpenAI(apiKey: string, model: string, messages: OpenAIMessage[]) {
+  const stream = await streamOpenAI({
+    apiKey,
+    model,
+    messages,
+    temperature: 0.7,
+    maxTokens: 4000,
+  });
+  return await streamToString(stream);
 }
-
-PHASE 2 - FILES:
-Output multiple JSON objects, one per file, with type "file":
-{
-  "type": "file",
-  "file": {
-    "path": "App.js",
-    "language": "javascript",
-    "purpose": "main component",
-    "contents": "file contents here..."
-  }
-}
-
-REQUIREMENTS:
-- Keep apps under 10 files
-- Always include: App.js, index.js, styles.css, package.json
-- Use React functional components with hooks
-- Include inline comments explaining the code
-- Make the UI beautiful and modern
-- Use CSS for styling (inline styles or separate CSS file)
-- Ensure all code is production-ready and error-free
-- Do NOT use server-side code or API calls to external services
-- Create complete, working applications that run in the browser
-
-For package.json, include:
-{
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "main": "/index.js"
-}
-
-Output ONLY valid JSON objects, one per line. No markdown, no explanations, no extra text.`;
 
 export async function POST(req: Request) {
   try {
@@ -84,77 +43,313 @@ export async function POST(req: Request) {
 
     const write = async (obj: unknown) => {
       try {
-        // Validate with zod
         StreamMessageSchema.parse(obj);
         const line = JSON.stringify(obj) + '\n';
         await writer.write(encoder.encode(line));
       } catch (error) {
         console.error('Schema validation failed:', error);
-        // Still write it but log the error
         const line = JSON.stringify(obj) + '\n';
         await writer.write(encoder.encode(line));
       }
     };
 
-    // Start streaming in the background
+    // Start generation in background
     (async () => {
       try {
-        await write({ type: 'status', message: 'Connecting to AI...' });
+        await write({ type: 'status', message: 'Planning your application...' });
 
-        const userMessage = intent === 'refine' && targetFile
-          ? `Modify the file "${targetFile}" based on this request: ${prompt}`
-          : `Create a web application: ${prompt}`;
+        // Step 1: Generate Blueprint
+        const blueprintPrompt = `You are a web development architect. Create a detailed blueprint for this application: "${prompt}"
 
-        const stream = await streamOpenAI({
-          apiKey,
-          model: modelToUse,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userMessage },
-          ],
-          temperature: 0.7,
-          maxTokens: 4000,
-        });
+Return ONLY a JSON object in this exact format (no markdown, no extra text):
+{
+  "title": "App Name",
+  "description": "Brief description of the app",
+  "pages": ["Home", "About"],
+  "components": ["Button", "Card", "Header"],
+  "routes": ["/", "/about"],
+  "tech": {
+    "framework": "react",
+    "ui": "modern CSS",
+    "styling": "CSS3"
+  },
+  "notes": "Any important implementation notes"
+}`;
 
-        await write({ type: 'status', message: 'Generating blueprint and files...' });
+        const blueprintResponse = await callOpenAI(apiKey, modelToUse, [
+          { role: 'user', content: blueprintPrompt }
+        ]);
 
-        const fullResponse = await streamToString(stream);
+        // Parse blueprint
+        let blueprint = null;
+        try {
+          // Try to extract JSON from response
+          const jsonMatch = blueprintResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            blueprint = JSON.parse(jsonMatch[0]);
+            await write({
+              type: 'blueprint',
+              blueprint: blueprint
+            });
+          }
+        } catch (e) {
+          console.error('Failed to parse blueprint:', e);
+          // Create a default blueprint
+          blueprint = {
+            title: prompt.slice(0, 50),
+            description: `A custom ${prompt}`,
+            pages: ["Home"],
+            components: ["App"],
+            routes: ["/"],
+            tech: { framework: "react", ui: "CSS" }
+          };
+          await write({ type: 'blueprint', blueprint });
+        }
 
-        // Parse the response line by line
-        const lines = fullResponse.split('\n').filter(line => line.trim());
+        await write({ type: 'status', message: 'Generating application files...' });
+
+        // Step 2: Generate Files
+        const filesPrompt = `Create a complete React application for: "${prompt}"
+
+Generate the following files for a working React app:
+
+1. App.js - Main React component
+2. index.js - Entry point with React DOM rendering
+3. styles.css - Beautiful CSS styles
+4. package.json - Dependencies
+
+For EACH file, write it in this format:
+FILE: filename.ext
+\`\`\`
+file contents here
+\`\`\`
+
+Requirements:
+- Use React 18 functional components with hooks
+- Make the UI beautiful and modern
+- Include helpful comments
+- Make it fully functional
+- Use inline styles or CSS file for styling
+- No external API calls
+- Keep it simple but impressive
+
+Start with FILE: App.js`;
+
+        const filesResponse = await callOpenAI(apiKey, modelToUse, [
+          { role: 'user', content: filesPrompt }
+        ]);
+
+        // Parse files from response
+        const fileMatches = filesResponse.matchAll(/FILE:\s*([^\n]+)\n```([^`]*)\n```/gs);
         let fileCount = 0;
 
-        for (const line of lines) {
-          try {
-            const obj = JSON.parse(line);
+        for (const match of fileMatches) {
+          const [, filepath, contents] = match;
+          const path = filepath.trim();
+          const fileContents = contents.trim();
 
-            if (obj.type === 'blueprint') {
-              await write(obj);
-              await write({ type: 'status', message: 'Blueprint ready. Generating files...' });
-            } else if (obj.type === 'file') {
-              fileCount++;
-              await write(obj);
-              await write({ type: 'status', message: `Generated file ${fileCount}: ${obj.file.path}` });
-            }
-          } catch (parseError) {
-            // If it's not valid JSON, it might be partial output
-            // Try to extract JSON objects from the text
-            const jsonMatches = line.match(/\{[^}]+\}/g);
-            if (jsonMatches) {
-              for (const match of jsonMatches) {
-                try {
-                  const obj = JSON.parse(match);
-                  if (obj.type === 'blueprint') {
-                    await write(obj);
-                  } else if (obj.type === 'file') {
-                    fileCount++;
-                    await write(obj);
-                  }
-                } catch {
-                  // Skip invalid JSON
-                }
+          if (path && fileContents) {
+            fileCount++;
+
+            const ext = path.split('.').pop()?.toLowerCase();
+            const languageMap: Record<string, string> = {
+              js: 'javascript',
+              jsx: 'javascript',
+              css: 'css',
+              json: 'json',
+              html: 'html'
+            };
+
+            await write({
+              type: 'file',
+              file: {
+                path,
+                language: languageMap[ext || 'js'] || 'javascript',
+                purpose: `Generated file`,
+                contents: fileContents
               }
+            });
+
+            await write({
+              type: 'status',
+              message: `Created ${path}`
+            });
+          }
+        }
+
+        // If no files were generated, create default files
+        if (fileCount === 0) {
+          await write({ type: 'status', message: 'Creating default application structure...' });
+
+          // Create default files
+          const defaultFiles = [
+            {
+              path: 'App.js',
+              language: 'javascript',
+              purpose: 'Main application component',
+              contents: `import React, { useState } from 'react';
+import './styles.css';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1>🚀 ${prompt}</h1>
+        <p>Your app is ready!</p>
+      </header>
+
+      <main className="app-main">
+        <div className="card">
+          <h2>Counter Example</h2>
+          <p className="count">{count}</p>
+          <div className="button-group">
+            <button onClick={() => setCount(count - 1)}>-</button>
+            <button onClick={() => setCount(0)}>Reset</button>
+            <button onClick={() => setCount(count + 1)}>+</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}`
+            },
+            {
+              path: 'index.js',
+              language: 'javascript',
+              purpose: 'Application entry point',
+              contents: `import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+
+const root = createRoot(document.getElementById('root'));
+root.render(<App />);`
+            },
+            {
+              path: 'styles.css',
+              language: 'css',
+              purpose: 'Application styles',
+              contents: `* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: rgba(255, 255, 255, 0.95);
+  padding: 2rem;
+  text-align: center;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.app-header h1 {
+  color: #333;
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.app-header p {
+  color: #666;
+  font-size: 1.2rem;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.card {
+  background: white;
+  border-radius: 16px;
+  padding: 3rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  min-width: 300px;
+}
+
+.card h2 {
+  color: #333;
+  margin-bottom: 1.5rem;
+  font-size: 1.8rem;
+}
+
+.count {
+  font-size: 4rem;
+  font-weight: bold;
+  color: #667eea;
+  margin: 1.5rem 0;
+}
+
+.button-group {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+button {
+  padding: 1rem 2rem;
+  font-size: 1.2rem;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
+  background: #667eea;
+  color: white;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+button:hover {
+  background: #764ba2;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+button:active {
+  transform: translateY(0);
+}`
+            },
+            {
+              path: 'package.json',
+              language: 'json',
+              purpose: 'Project dependencies',
+              contents: `{
+  "name": "generated-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "main": "/index.js"
+}`
             }
+          ];
+
+          for (const file of defaultFiles) {
+            fileCount++;
+            await write({
+              type: 'file',
+              file
+            });
+            await write({
+              type: 'status',
+              message: `Created ${file.path}`
+            });
           }
         }
 
@@ -162,6 +357,7 @@ export async function POST(req: Request) {
           type: 'complete',
           metrics: { files: fileCount },
         });
+
       } catch (error) {
         console.error('Generation error:', error);
         await write({
