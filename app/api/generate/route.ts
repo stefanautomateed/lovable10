@@ -404,7 +404,7 @@ button:active {
 
     return new Response(readable, {
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
         'Cache-Control': 'no-cache',
         'X-Content-Type-Options': 'nosniff',
       },
