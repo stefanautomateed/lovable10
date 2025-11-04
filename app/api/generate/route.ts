@@ -3,6 +3,20 @@ import { StreamMessageSchema } from '@/lib/schemas';
 
 export const runtime = 'edge';
 
+// Helper to extract JSON from text that might contain markdown or other formatting
+function extractJSON(text: string): any {
+  // Remove markdown code blocks
+  let cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+
+  // Try to find JSON object
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('No JSON object found in response');
+  }
+
+  return JSON.parse(jsonMatch[0]);
+}
+
 // Helper to call OpenAI and get full response
 async function callOpenAI(apiKey: string, model: string, messages: OpenAIMessage[]) {
   const stream = await streamOpenAI({
@@ -83,17 +97,14 @@ Return ONLY a JSON object in this exact format (no markdown, no extra text):
         // Parse blueprint
         let blueprint = null;
         try {
-          // Try to extract JSON from response
-          const jsonMatch = blueprintResponse.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            blueprint = JSON.parse(jsonMatch[0]);
-            await write({
-              type: 'blueprint',
-              blueprint: blueprint
-            });
-          }
+          // Extract JSON from response (handles markdown code blocks)
+          blueprint = extractJSON(blueprintResponse);
+          await write({
+            type: 'blueprint',
+            blueprint: blueprint
+          });
         } catch (e) {
-          console.error('Failed to parse blueprint:', e);
+          console.error('Failed to parse blueprint:', e, 'Response:', blueprintResponse.slice(0, 200));
           // Create a default blueprint
           blueprint = {
             title: prompt.slice(0, 50),
@@ -139,42 +150,56 @@ Start with FILE: App.js`;
           { role: 'user', content: filesPrompt }
         ]);
 
-        // Parse files from response
-        const fileMatches = filesResponse.matchAll(/FILE:\s*([^\n]+)\n```([^`]*)\n```/gs);
+        // Parse files from response - handle multiple formats
         let fileCount = 0;
 
-        for (const match of fileMatches) {
-          const [, filepath, contents] = match;
-          const path = filepath.trim();
-          const fileContents = contents.trim();
+        // Try multiple patterns to extract files
+        const patterns = [
+          /FILE:\s*([^\n]+)\n```(?:javascript|js|jsx|css|json|html)?\n?([\s\S]*?)```/gi,
+          /FILE:\s*([^\n]+)\n```\n?([\s\S]*?)```/gi,
+          /##?\s*([^\n]+\.(?:js|jsx|css|json|html))\n```(?:javascript|js|jsx|css|json|html)?\n?([\s\S]*?)```/gi,
+        ];
 
-          if (path && fileContents) {
-            fileCount++;
+        for (const pattern of patterns) {
+          const matches = Array.from(filesResponse.matchAll(pattern));
 
-            const ext = path.split('.').pop()?.toLowerCase();
-            const languageMap: Record<string, string> = {
-              js: 'javascript',
-              jsx: 'javascript',
-              css: 'css',
-              json: 'json',
-              html: 'html'
-            };
+          for (const match of matches) {
+            const filepath = match[1];
+            const contents = match[2];
+            const path = filepath.trim();
+            const fileContents = contents.trim();
 
-            await write({
-              type: 'file',
-              file: {
-                path,
-                language: languageMap[ext || 'js'] || 'javascript',
-                purpose: `Generated file`,
-                contents: fileContents
-              }
-            });
+            if (path && fileContents && !fileContents.includes('FILE:')) {
+              fileCount++;
 
-            await write({
-              type: 'status',
-              message: `Created ${path}`
-            });
+              const ext = path.split('.').pop()?.toLowerCase();
+              const languageMap: Record<string, string> = {
+                js: 'javascript',
+                jsx: 'javascript',
+                css: 'css',
+                json: 'json',
+                html: 'html'
+              };
+
+              await write({
+                type: 'file',
+                file: {
+                  path,
+                  language: languageMap[ext || 'js'] || 'javascript',
+                  purpose: `Generated file`,
+                  contents: fileContents
+                }
+              });
+
+              await write({
+                type: 'status',
+                message: `Created ${path}`
+              });
+            }
           }
+
+          // If we found files with this pattern, don't try others
+          if (fileCount > 0) break;
         }
 
         // If no files were generated, create default files
